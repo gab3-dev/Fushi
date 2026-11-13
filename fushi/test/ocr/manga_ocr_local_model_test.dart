@@ -240,6 +240,7 @@ void main() {
         ]);
         final MangaOcrModelFile rec = MangaOcrLocalModel.mangaCtc.manifest.last;
         expect(rec.url, contains('/resolve/$kMangaCtcRecRevision/'));
+        expect(rec.url, endsWith('/rec/manga_rec.onnx'));
         expect(rec.expectedBytes, 21167540);
         final int total = MangaOcrLocalModel.mangaCtc.manifest.fold<int>(
           0,

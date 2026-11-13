@@ -321,6 +321,98 @@ void main() {
     await tester.pump();
     expect(tapped, <String>['/c/2']);
   });
+
+  testWidgets('多选章节后可批量下载并标记已读', (WidgetTester tester) async {
+    final List<List<String>> downloads = <List<String>>[];
+    final List<List<String>> markedRead = <List<String>>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: MangaChapterList(
+              entry: entryWith(chapters),
+              states: const <String, MangaChapterStateRow>{},
+              newestFirst: true,
+              unreadOnly: false,
+              onChapterTap: (OnlineMangaChapter _) {},
+              onDownloadSelected: (List<OnlineMangaChapter> selected) async {
+                downloads.add(
+                  selected.map((OnlineMangaChapter c) => c.key).toList(),
+                );
+              },
+              onMarkSelectedRead: (List<OnlineMangaChapter> selected) async {
+                markedRead.add(
+                  selected.map((OnlineMangaChapter c) => c.key).toList(),
+                );
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(
+      find.byKey(const ValueKey<String>('manga-chapter-select-mode')),
+    );
+    await tester.tap(
+      find.byKey(const ValueKey<String>('manga-chapter-select-mode')),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const ValueKey<String>('manga_chapter_/c/3')),
+    );
+    await tester.tap(find.byKey(const ValueKey<String>('manga_chapter_/c/3')));
+    await tester.ensureVisible(
+      find.byKey(const ValueKey<String>('manga_chapter_/c/2')),
+    );
+    await tester.tap(find.byKey(const ValueKey<String>('manga_chapter_/c/2')));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const ValueKey<String>('manga-chapter-batch-download')),
+    );
+    await tester.tap(
+      find.byKey(const ValueKey<String>('manga-chapter-batch-download')),
+    );
+    await tester.pumpAndSettle();
+    expect(downloads, <List<String>>[
+      <String>['/c/3', '/c/2'],
+    ]);
+
+    await tester.ensureVisible(
+      find.byKey(const ValueKey<String>('manga-chapter-select-mode')),
+    );
+    await tester.tap(
+      find.byKey(const ValueKey<String>('manga-chapter-select-mode')),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const ValueKey<String>('manga_chapter_/c/1')),
+    );
+    await tester.tap(find.byKey(const ValueKey<String>('manga_chapter_/c/1')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<MediaDetailItemRow>(
+            find.ancestor(
+              of: find.text('Chapter 1'),
+              matching: find.byType(MediaDetailItemRow),
+            ),
+          )
+          .selected,
+      isTrue,
+    );
+    await tester.ensureVisible(
+      find.byKey(const ValueKey<String>('manga-chapter-batch-mark-read')),
+    );
+    await tester.tap(
+      find.byKey(const ValueKey<String>('manga-chapter-batch-mark-read')),
+    );
+    await tester.pumpAndSettle();
+    expect(markedRead, <List<String>>[
+      <String>['/c/1'],
+    ]);
+  });
 }
 
 MangaChapterStateRow _state({

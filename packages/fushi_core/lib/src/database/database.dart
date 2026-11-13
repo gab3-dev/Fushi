@@ -924,7 +924,7 @@ class FushiDatabase extends _$FushiDatabase
   final bool _isMainProcess;
 
   @override
-  int get schemaVersion => 146;
+  int get schemaVersion => 147;
 
   /// v125–v128 四步的产物（全部幂等）：SRS 写路径索引、
   /// `collection_member_tombstones.published_at`、`bookmarks.char_offset` /
@@ -2940,6 +2940,11 @@ class FushiDatabase extends _$FushiDatabase
         if (!await _tableExists('music_resume_points')) {
           await m.createTable(musicResumePoints);
         }
+      }
+      if (from < 147 && await _tableExists('manga_download_jobs')) {
+        // v147：允许显式 paused 状态，任务行重建以更新 SQLite CHECK 约束；所有
+        // 原任务与部分下载进度由 Drift 的 TableMigration 原样复制。
+        await m.alterTable(TableMigration(mangaDownloadJobs));
       }
     },
     onCreate: (m) async {

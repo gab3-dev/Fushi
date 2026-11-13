@@ -631,6 +631,72 @@ class _MangaSeriesPageState extends ConsumerState<MangaSeriesPage> {
     await _refreshDownloadState();
   }
 
+  Future<void> _downloadSelected(List<OnlineMangaChapter> chapters) async {
+    final OnlineMangaLibraryEntry? entry = _entry;
+    final AppModel? appModel = _appModelOrNull;
+    if (entry == null || appModel == null) return;
+    final List<OnlineMangaChapter> pending = <OnlineMangaChapter>[];
+    int skipped = 0;
+    for (final OnlineMangaChapter chapter in chapters) {
+      if (_downloaded.contains(chapter.key) || _isChapterPending(chapter)) {
+        continue;
+      }
+      if (chapter.locked) {
+        skipped++;
+        continue;
+      }
+      pending.add(chapter);
+    }
+    try {
+      if (pending.isNotEmpty) {
+        await appModel.mangaDownloadService.enqueueChapters(
+          entry: entry,
+          chapters: pending,
+          autoOcr: appModel.mangaDownloadAutoOcr,
+        );
+      }
+      if (mounted) {
+        final List<String> results = <String>[
+          if (pending.isNotEmpty)
+            t.manga_series_download_all_queued(count: pending.length),
+          if (skipped > 0)
+            t.manga_series_download_all_locked_skipped(count: skipped),
+          if (pending.isEmpty && skipped == 0) t.manga_series_download_all_none,
+        ];
+        FushiToast.show(msg: results.join(' · '));
+      }
+    } on Object catch (error, stack) {
+      ErrorLogService.instance.log(
+        'MangaSeriesPage.downloadSelected',
+        error,
+        stack,
+      );
+      if (mounted) {
+        FushiToast.show(
+          msg: describeOnlineSourceError(error),
+          severity: ToastSeverity.error,
+        );
+      }
+    }
+    await _refreshDownloadState();
+  }
+
+  Future<void> _markSelectedChaptersRead(
+    List<OnlineMangaChapter> chapters,
+  ) async {
+    final String? bookUid = _bookUid;
+    if (bookUid == null || chapters.isEmpty) return;
+    if (await _markKavitaChapters(chapters, read: true)) {
+      await _reloadChapterStates();
+      return;
+    }
+    await _appModel.database.markMangaChaptersRead(
+      bookUid: bookUid,
+      chapterKeys: <String>[for (final OnlineMangaChapter c in chapters) c.key],
+    );
+    await _reloadChapterStates();
+  }
+
   /// 点了锁定章：源站要登录并购买 / 租借才给页。弹窗给三条路——登录该源、
   /// 仍然下载（用户确信自己已解锁、只是列表没刷新）、取消。
   ///
@@ -814,6 +880,7 @@ class _MangaSeriesPageState extends ConsumerState<MangaSeriesPage> {
   bool _isChapterPending(OnlineMangaChapter chapter) {
     final String? status = _jobs[chapter.key]?.status;
     return status == MangaDownloadJobStatus.queued ||
+        status == MangaDownloadJobStatus.paused ||
         status == MangaDownloadJobStatus.running;
   }
 
@@ -1229,6 +1296,7 @@ class _MangaSeriesPageState extends ConsumerState<MangaSeriesPage> {
       );
       for (final MangaDownloadJobRow job in jobs.values) {
         if (job.status == MangaDownloadJobStatus.queued ||
+            job.status == MangaDownloadJobStatus.paused ||
             job.status == MangaDownloadJobStatus.running) {
           await downloads.remove(job.jobId);
         }
@@ -1739,6 +1807,12 @@ class _MangaSeriesPageState extends ConsumerState<MangaSeriesPage> {
                   duration: fushiMotionDuration(context, FushiMotion.medium),
                 ),
           onUnreadOnlyToggled: () => setState(() => _unreadOnly = !_unreadOnly),
+          onDownloadSelected: _bookKey == null || !_downloadsAllowed
+              ? null
+              : _downloadSelected,
+          onMarkSelectedRead: _bookUid == null
+              ? null
+              : _markSelectedChaptersRead,
           onChapterTap: (OnlineMangaChapter chapter) {
             final int index = _entry?.indexOfChapterKey(chapter.key) ?? -1;
             if (index >= 0) unawaited(_openChapterAt(index));

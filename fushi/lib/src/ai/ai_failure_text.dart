@@ -8,6 +8,21 @@ import 'package:fushi/i18n/strings.g.dart';
 /// 短码是调用层与 UI 之间的唯一契约（见 `ai_chat_client.dart`），别在别处再各自
 /// 解释一遍。认不出的码原样返回（刮削运行记录里也可能是异常类型名）。
 String aiFailureText(String code) {
+  if (code.startsWith('chatgpt_plan_')) {
+    return switch (code) {
+      'chatgpt_plan_usage_limit' => t.ai_error_chatgpt_plan_usage_limit,
+      'chatgpt_plan_service_unavailable' =>
+        t.ai_error_chatgpt_plan_service_unavailable,
+      'chatgpt_plan_audio_unsupported' =>
+        t.ai_error_chatgpt_plan_audio_unsupported,
+      'chatgpt_plan_unsupported_capability' =>
+        t.ai_error_chatgpt_plan_unsupported_capability,
+      'chatgpt_plan_auth_required' ||
+      'chatgpt_plan_reauth_required' => t.ai_error_chatgpt_plan_auth_required,
+      'chatgpt_plan_scope_missing' => t.ai_error_chatgpt_plan_scope_missing,
+      _ => t.ai_error_chatgpt_plan_connect,
+    };
+  }
   if (code.startsWith('http_')) {
     return t.ai_error_http(code: code.substring(5));
   }

@@ -419,6 +419,7 @@ class MokuroMoeCatalogViewState extends ConsumerState<MokuroMoeCatalogView> {
     final MangaDownloadJobRow? job = _jobs[volume];
     return job != null &&
         (job.status == MangaDownloadJobStatus.queued ||
+            job.status == MangaDownloadJobStatus.paused ||
             job.status == MangaDownloadJobStatus.running);
   }
 
@@ -700,6 +701,7 @@ class MokuroMoeCatalogViewState extends ConsumerState<MokuroMoeCatalogView> {
   bool get _hasUnfinishedJobs => _jobs.values.any(
     (MangaDownloadJobRow job) =>
         job.status == MangaDownloadJobStatus.queued ||
+        job.status == MangaDownloadJobStatus.paused ||
         job.status == MangaDownloadJobStatus.running,
   );
 
@@ -784,6 +786,7 @@ class MokuroMoeCatalogViewState extends ConsumerState<MokuroMoeCatalogView> {
         : switch (job?.status) {
             MangaDownloadJobStatus.running => _progressLabel(job!),
             MangaDownloadJobStatus.queued => t.download_status_queued,
+            MangaDownloadJobStatus.paused => t.download_task_status_paused,
             // lastError 是持久化的原始异常串，只给归一后的短句。
             MangaDownloadJobStatus.failed => _failedLabel(job!.lastError),
             _ => null,
@@ -879,22 +882,27 @@ class MokuroMoeCatalogViewState extends ConsumerState<MokuroMoeCatalogView> {
   Widget _buildQueuePanel(FushiDesignTokens tokens) {
     final List<MangaDownloadJobRow> jobs = _jobs.values.toList();
     MangaDownloadJobRow? running;
+    MangaDownloadJobRow? paused;
     for (final MangaDownloadJobRow job in jobs) {
       if (job.status == MangaDownloadJobStatus.running) {
         running = job;
         break;
       }
+      if (job.status == MangaDownloadJobStatus.paused) paused ??= job;
     }
     final int finished = jobs
         .where(
           (MangaDownloadJobRow job) =>
               job.status != MangaDownloadJobStatus.queued &&
+              job.status != MangaDownloadJobStatus.paused &&
               job.status != MangaDownloadJobStatus.running,
         )
         .length;
-    final String label = running == null
-        ? t.download_status_queued
-        : '${running.title} · ${_progressLabel(running)}';
+    final String label = running != null
+        ? '${running.title} · ${_progressLabel(running)}'
+        : paused != null
+        ? '${paused.title} · ${t.download_task_status_paused}'
+        : t.download_status_queued;
     final MangaDownloadJobRow? cancelTarget = running;
     return Padding(
       padding: EdgeInsets.only(bottom: tokens.spacing.gap),

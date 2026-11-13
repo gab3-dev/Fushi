@@ -3,7 +3,8 @@
 /// 三种 wire 协议（OpenAI 兼容 / Anthropic Messages / Gemini generateContent）在
 /// 这里分派，上层只面对 [AiChatClient.complete]（一次性问答）与 [AiChatClient.chat]
 /// （带原生 tool calling 的一轮对话，AI 助手的 agent loop 用）。**不做流式**：本仓
-/// 当前的 AI 用途是「生成一条规则/一段配置」这种短请求，流式只会把 UI 状态机复杂化。
+/// 当前公开调用仍是完整回复；ChatGPT plan 的 Responses API 按官方要求用 SSE 传输，
+/// 客户端在内部收至 `response.completed` 后再返回完整回复。
 ///
 /// 出站一律经 `createAppHttpIoClient()`——裸 `http.Client()` 既绕过应用代理与连接
 /// 超时（代理环境下会出现「浏览器能开、app 里连不上」这种自相矛盾的结果），也会被
@@ -40,6 +41,20 @@ const int _kPingMaxTokens = 32;
 /// 偶发限流不能让一批 OCR 纠错直接作废。
 const int kAiChatMaxAttempts = 3;
 
+/// The ChatGPT-plan OAuth access-token lookup is installed by the Flutter host.
+typedef AiChatPlanAccessTokenResolver =
+    Future<String> Function(String credentialId);
+
+AiChatPlanAccessTokenResolver? aiChatPlanAccessTokenResolver;
+
+void installAiChatPlanAccessTokenResolver(
+  AiChatPlanAccessTokenResolver resolver,
+) {
+  aiChatPlanAccessTokenResolver = resolver;
+}
+
+const String kAiChatPlanAuthRequired = 'chatgpt_plan_auth_required';
+
 /// 重试的指数退避基数：第 n 次重试前等 base × 2^(n-1)（2 秒、4 秒）。提供商给了
 /// `Retry-After` 就按它的。
 const Duration kAiChatRetryBaseDelay = Duration(seconds: 2);
@@ -54,6 +69,7 @@ const Duration kAiTranscriptionRequestTimeout = Duration(minutes: 5);
 
 /// 提供商协议没有语音转录端点（只有 OpenAI 兼容协议有 `/audio/transcriptions`）。
 const String kAiTranscriptionUnsupportedProtocol = 'unsupported_protocol';
+const String kAiChatPlanAudioUnsupported = 'chatgpt_plan_audio_unsupported';
 
 /// multipart 表单分隔串：随机 32 位十六进制，撞上音频字节的概率可忽略。
 String aiMultipartBoundary() {
@@ -327,6 +343,23 @@ AiChatUsage? parseAiChatUsage(
         outputTokens: _jsonInt(u['completion_tokens']),
         cacheReadTokens: cached,
       );
+    case AiWireProtocol.openAiResponses:
+      final Object? u = body['usage'];
+      if (u is! Map) return null;
+      final Object? details = u['input_tokens_details'];
+      final int? input = _jsonInt(u['input_tokens']);
+      final int? cached = details is Map
+          ? _jsonInt(details['cached_tokens'])
+          : null;
+      usage = AiChatUsage(
+        inputTokens: input == null
+            ? null
+            : cached == null
+            ? input
+            : (input - cached).clamp(0, input),
+        outputTokens: _jsonInt(u['output_tokens']),
+        cacheReadTokens: cached,
+      );
     case AiWireProtocol.geminiGenerateContent:
       final Object? u = body['usageMetadata'];
       if (u is! Map) return null;
@@ -374,6 +407,7 @@ class AiChatFailure implements Exception {
   bool get isTransient =>
       message == 'network_error' ||
       message == 'rate_limited' ||
+      message == 'chatgpt_plan_service_unavailable' ||
       message.startsWith('http_5');
 
   @override
@@ -491,8 +525,10 @@ class AiChatClient {
     DateTime Function()? clock,
     AiRateLimiter? rateLimiter,
     AiRelayTransport? relayTransport,
+    AiChatPlanAccessTokenResolver? planAccessTokenResolver,
   }) : _client = client ?? createAppHttpIoClient(),
        _relayTransport = relayTransport,
+       _planAccessTokenResolver = planAccessTokenResolver,
        _ownsClient = client == null,
        _healthStore = healthStore,
        _clock = clock ?? DateTime.now,
@@ -504,6 +540,24 @@ class AiChatClient {
   /// 「互联主机」提供商（[AiProviderConfig.relay]）的出口；null = 现取全局装配点
   /// [aiRelayTransport]（app 在配对表可读之后才装上，客户端可能比那更早建）。
   final AiRelayTransport? _relayTransport;
+
+  final AiChatPlanAccessTokenResolver? _planAccessTokenResolver;
+
+  Future<String> _planAccessToken(AiProviderConfig provider) async {
+    final String? credentialId = provider.chatGptPlanCredentialId;
+    final AiChatPlanAccessTokenResolver? resolver =
+        _planAccessTokenResolver ?? aiChatPlanAccessTokenResolver;
+    if (credentialId == null || resolver == null) {
+      throw const AiChatFailure(kAiChatPlanAuthRequired);
+    }
+    try {
+      return await resolver(credentialId);
+    } on AiChatFailure {
+      rethrow;
+    } on Object {
+      throw const AiChatFailure(kAiChatPlanAuthRequired);
+    }
+  }
 
   /// 互联主机提供商的一次调用：整个请求交给主机，限频 / key 轮换 / 临时性失败退避
   /// 都在主机上做（本机没有 key，也看不见主机那家的限额），这里不再叠一层重试——
@@ -607,6 +661,7 @@ class AiChatClient {
     );
     final String? text = switch (provider.protocol) {
       AiWireProtocol.openAiCompatible => _openAiText(body),
+      AiWireProtocol.openAiResponses => _openAiText(body),
       AiWireProtocol.anthropicMessages => _anthropicText(body),
       AiWireProtocol.geminiGenerateContent => _geminiText(body),
     };
@@ -666,6 +721,11 @@ class AiChatClient {
         _openAiToolCalls(body),
         _stopReason(provider.protocol, body),
       ),
+      AiWireProtocol.openAiResponses => (
+        _openAiText(body),
+        _openAiToolCalls(body),
+        _stopReason(provider.protocol, body),
+      ),
       AiWireProtocol.anthropicMessages => (
         _anthropicText(body),
         _anthropicToolCalls(body),
@@ -720,6 +780,7 @@ class AiChatClient {
     }
     final String topKey = switch (provider.protocol) {
       AiWireProtocol.openAiCompatible => 'choices',
+      AiWireProtocol.openAiResponses => 'choices',
       AiWireProtocol.anthropicMessages => 'content',
       AiWireProtocol.geminiGenerateContent => 'candidates',
     };
@@ -776,6 +837,10 @@ class AiChatClient {
   ) async {
     final Uri uri = switch (provider.protocol) {
       AiWireProtocol.openAiCompatible => _resolve(provider.baseUrl, 'models'),
+      AiWireProtocol.openAiResponses => _resolve(
+        Uri.parse('https://api.openai.com/v1'),
+        'models',
+      ),
       AiWireProtocol.anthropicMessages => _resolve(
         provider.baseUrl,
         'v1/models',
@@ -785,8 +850,11 @@ class AiChatClient {
         'models',
       ).replace(queryParameters: <String, String>{'key': key}),
     };
+    final String requestKey = provider.usesChatGptPlan
+        ? await _planAccessToken(provider)
+        : key;
     final http.Response response = await _send(
-      () => _client.get(uri, headers: _headers(provider, key)),
+      () => _client.get(uri, headers: _headers(provider, requestKey)),
     );
     final Object? body = _decodeBody(response);
     if (body is! Map) {
@@ -799,7 +867,10 @@ class AiChatClient {
         if (entry is! Map) {
           continue;
         }
-        final Object? id = entry['id'] ?? entry['name'];
+        if (provider.usesChatGptPlan && entry['visibility'] != 'list') {
+          continue;
+        }
+        final Object? id = entry['slug'] ?? entry['id'] ?? entry['name'];
         if (id is String && id.isNotEmpty) {
           // Gemini 回的是 `models/gemini-...`，剥掉前缀才是请求里要用的模型名。
           models.add(id.startsWith('models/') ? id.substring(7) : id);
@@ -835,7 +906,11 @@ class AiChatClient {
       throw const AiChatFailure(kAiRelayOperationUnsupported);
     }
     if (provider.protocol != AiWireProtocol.openAiCompatible) {
-      throw const AiChatFailure(kAiTranscriptionUnsupportedProtocol);
+      throw AiChatFailure(
+        provider.usesChatGptPlan
+            ? kAiChatPlanAudioUnsupported
+            : kAiTranscriptionUnsupportedProtocol,
+      );
     }
     if (!provider.isUsable) {
       throw const AiChatFailure('provider_not_configured');
@@ -1031,6 +1106,9 @@ class AiChatClient {
     int maxTokens, [
     List<AiChatToolSpec> tools = const <AiChatToolSpec>[],
   ]) async {
+    if (provider.protocol == AiWireProtocol.openAiResponses) {
+      return _postResponses(provider, key, messages, tools);
+    }
     final (Uri uri, Map<String, Object?> payload) = switch (provider.protocol) {
       AiWireProtocol.openAiCompatible => (
         _resolve(provider.baseUrl, 'chat/completions'),
@@ -1046,6 +1124,9 @@ class AiChatClient {
           'models/${provider.model}:generateContent',
         ).replace(queryParameters: <String, String>{'key': key}),
         _geminiPayload(messages, maxTokens, tools),
+      ),
+      AiWireProtocol.openAiResponses => throw StateError(
+        'Responses requests must use _postResponses',
       ),
     };
     final http.Response response = await _send(
@@ -1066,6 +1147,7 @@ class AiChatClient {
     // GewyVIt5oo）。短码不带服务端原文（可能含路径等）。
     final String replyKey = switch (provider.protocol) {
       AiWireProtocol.openAiCompatible => 'choices',
+      AiWireProtocol.openAiResponses => 'choices',
       AiWireProtocol.anthropicMessages => 'content',
       AiWireProtocol.geminiGenerateContent => 'candidates',
     };
@@ -1073,6 +1155,303 @@ class AiChatClient {
       throw const AiChatFailure(kAiEndpointErrorCode);
     }
     return body;
+  }
+
+  /// ChatGPT plan sharing only accepts streaming Responses requests. The public
+  /// client APIs remain one-shot; consume the SSE stream here and normalize its
+  /// terminal response into the existing OpenAI-shaped parser contract.
+  Future<Map<Object?, Object?>> _postResponses(
+    AiProviderConfig provider,
+    String _,
+    List<AiChatMessage> messages,
+    List<AiChatToolSpec> tools,
+  ) async {
+    if (!provider.usesChatGptPlan) {
+      throw const AiChatFailure('provider_not_configured');
+    }
+    final String token = await _planAccessToken(provider);
+    final Map<String, Object?> payload = <String, Object?>{
+      'model': provider.model,
+      'input': _responsesInput(messages),
+      if (_systemText(messages).isNotEmpty)
+        'instructions': _systemText(messages),
+      'store': false,
+      'stream': true,
+      if (tools.isNotEmpty)
+        'tools': <Map<String, Object?>>[
+          for (final AiChatToolSpec tool in tools)
+            <String, Object?>{
+              'type': 'function',
+              'name': tool.name,
+              'description': tool.description,
+              'parameters': tool.parameters,
+            },
+        ],
+    };
+    final http.Request request =
+        http.Request('POST', Uri.parse('https://api.openai.com/v1/responses'))
+          ..headers.addAll(<String, String>{
+            'authorization': 'Bearer $token',
+            'content-type': 'application/json',
+            'accept': 'text/event-stream',
+          })
+          ..body = jsonEncode(payload);
+    final http.StreamedResponse response;
+    try {
+      response = await _client.send(request).timeout(kAiChatRequestTimeout);
+    } on Object {
+      throw const AiChatFailure('network_error');
+    }
+    if (response.statusCode >= 400) {
+      final List<int> bytes;
+      try {
+        bytes = await response.stream.toBytes().timeout(kAiChatRequestTimeout);
+      } on Object {
+        throw const AiChatFailure('network_error');
+      }
+      final AiChatFailure? planFailure = provider.usesChatGptPlan
+          ? _chatGptPlanFailure(bytes)
+          : null;
+      if (planFailure != null) throw planFailure;
+      if (provider.usesChatGptPlan && response.statusCode == 401) {
+        throw const AiChatFailure('chatgpt_plan_auth_required');
+      }
+      if (provider.usesChatGptPlan && response.statusCode == 503) {
+        throw const AiChatFailure('chatgpt_plan_service_unavailable');
+      }
+      throw classifyAiHttpFailure(
+        statusCode: response.statusCode,
+        bodyBytes: bytes,
+        retryAfterHeader: response.headers['retry-after'],
+        now: _clock(),
+      );
+    }
+    final Map<String, Object?>? terminal = await _readResponsesSse(
+      response.stream,
+    );
+    if (terminal == null) throw const AiChatFailure('stream_interrupted');
+    return terminal;
+  }
+
+  static List<Map<String, Object?>> _responsesInput(
+    List<AiChatMessage> messages,
+  ) {
+    final List<Map<String, Object?>> input = <Map<String, Object?>>[];
+    for (final AiChatMessage message in messages) {
+      if (message.isSystem) continue;
+      if (message.isToolResult) {
+        input.add(<String, Object?>{
+          'type': 'function_call_output',
+          'call_id': message.toolCallId,
+          'output': message.content,
+        });
+        continue;
+      }
+      if (message.hasToolCalls) {
+        if (message.content.isNotEmpty) {
+          input.add(<String, Object?>{
+            'role': 'assistant',
+            'content': message.content,
+          });
+        }
+        for (final AiChatToolCall call in message.toolCalls) {
+          input.add(<String, Object?>{
+            'type': 'function_call',
+            'call_id': call.id,
+            'name': call.name,
+            'arguments': jsonEncode(call.arguments),
+          });
+        }
+        continue;
+      }
+      input.add(<String, Object?>{
+        'role': message.role,
+        'content': message.images.isEmpty
+            ? message.content
+            : <Map<String, Object?>>[
+                <String, Object?>{
+                  'type': 'input_text',
+                  'text': message.content,
+                },
+                for (final AiChatImage image in message.images)
+                  <String, Object?>{
+                    'type': 'input_image',
+                    'image_url':
+                        'data:${image.mimeType};base64,${image.base64Data}',
+                  },
+              ],
+      });
+    }
+    return input;
+  }
+
+  Future<Map<String, Object?>?> _readResponsesSse(
+    Stream<List<int>> stream,
+  ) async {
+    final StringBuffer pending = StringBuffer();
+    final List<String> dataLines = <String>[];
+    Map<String, Object?>? terminal;
+    void consumeData() {
+      if (dataLines.isEmpty) return;
+      final String data = dataLines.join('\n');
+      dataLines.clear();
+      if (data == '[DONE]') return;
+      final Object? decoded;
+      try {
+        decoded = jsonDecode(data);
+      } on FormatException {
+        throw const AiChatFailure('bad_response');
+      }
+      if (decoded is! Map) throw const AiChatFailure('bad_response');
+      final Object? eventType = decoded['type'];
+      if (eventType == 'response.failed' || eventType == 'error') {
+        throw AiChatFailure(_responsesFailureCode(decoded));
+      }
+      if (eventType == 'response.incomplete') {
+        throw const AiChatFailure('response_incomplete');
+      }
+      if (eventType != 'response.completed') return;
+      final Object? response = decoded['response'];
+      if (response is! Map) throw const AiChatFailure('bad_response');
+      terminal = _normalizeResponsesResult(response.cast<Object?, Object?>());
+    }
+
+    void consumeLine(String line) {
+      if (line.isEmpty) {
+        consumeData();
+      } else if (line.startsWith('data:')) {
+        final String value = line.substring(5);
+        dataLines.add(value.startsWith(' ') ? value.substring(1) : value);
+      }
+    }
+
+    try {
+      await for (final String chunk
+          in stream.transform(utf8.decoder).timeout(kAiChatRequestTimeout)) {
+        pending.write(chunk);
+        final String all = pending.toString();
+        final List<String> lines = all.split('\n');
+        pending
+          ..clear()
+          ..write(lines.removeLast());
+        for (final String line in lines) {
+          consumeLine(
+            line.endsWith('\r') ? line.substring(0, line.length - 1) : line,
+          );
+          if (terminal != null) return terminal;
+        }
+      }
+      final String last = pending.toString();
+      if (last.isNotEmpty) consumeLine(last);
+      consumeData();
+      return terminal;
+    } on AiChatFailure {
+      rethrow;
+    } on Object {
+      throw const AiChatFailure('network_error');
+    }
+  }
+
+  static String _responsesFailureCode(Map<Object?, Object?> event) {
+    Object? rawError = event['error'];
+    if (rawError == null && event['response'] is Map) {
+      rawError = (event['response'] as Map)['error'];
+    }
+    if (rawError == null && event['detail'] is String) {
+      rawError = event['detail'];
+    }
+    if (rawError is Map) {
+      final String? code = rawError['code'] as String?;
+      return _chatGptPlanCode(code);
+    }
+    return 'chatgpt_plan_request_failed';
+  }
+
+  static AiChatFailure? _chatGptPlanFailure(List<int> bodyBytes) {
+    try {
+      final Object? decoded = jsonDecode(utf8.decode(bodyBytes));
+      if (decoded is Map) {
+        final String code = _responsesFailureCode(
+          decoded.cast<Object?, Object?>(),
+        );
+        if (code != 'chatgpt_plan_request_failed') {
+          return AiChatFailure(code);
+        }
+      }
+    } on Object {
+      return null;
+    }
+    return null;
+  }
+
+  static String _chatGptPlanCode(String? code) => switch (code) {
+    'subscription_sharing_usage_limit_exceeded' => 'chatgpt_plan_usage_limit',
+    'subscription_sharing_user_not_eligible' ||
+    'subscription_sharing_invalid_user' => 'chatgpt_plan_auth_required',
+    'subscription_sharing_unsupported_capability' =>
+      'chatgpt_plan_unsupported_capability',
+    'subscription_sharing_route_not_supported' =>
+      'chatgpt_plan_unsupported_capability',
+    'subscription_sharing_usage_unavailable' =>
+      'chatgpt_plan_service_unavailable',
+    'chatpass_v2_scope_not_authorized' ||
+    'chatpass_v2_invalid_authorization_context' => 'chatgpt_plan_auth_required',
+    _ => 'chatgpt_plan_request_failed',
+  };
+
+  static Map<String, Object?> _normalizeResponsesResult(
+    Map<Object?, Object?> response,
+  ) {
+    final Object? output = response['output'];
+    final StringBuffer text = StringBuffer();
+    final List<Map<String, Object?>> calls = <Map<String, Object?>>[];
+    if (output is List) {
+      for (final Object? item in output) {
+        if (item is! Map) continue;
+        if (item['type'] == 'message' && item['content'] is List) {
+          for (final Object? part in item['content'] as List) {
+            if (part is Map &&
+                part['type'] == 'output_text' &&
+                part['text'] is String) {
+              text.write(part['text'] as String);
+            }
+          }
+        } else if (item['type'] == 'function_call') {
+          final Object? callId = item['call_id'];
+          final Object? name = item['name'];
+          final Object? arguments = item['arguments'];
+          if (name is! String || name.isEmpty) continue;
+          calls.add(<String, Object?>{
+            'id': callId is String ? callId : 'call_${calls.length}',
+            'type': 'function',
+            'function': <String, Object?>{
+              'name': name,
+              'arguments': arguments is String ? arguments : '{}',
+            },
+          });
+        }
+      }
+    }
+    final Object? usage = response['usage'];
+    final Map<String, Object?> normalizedUsage = <String, Object?>{};
+    if (usage is Map) {
+      normalizedUsage
+        ..['input_tokens'] = usage['input_tokens']
+        ..['output_tokens'] = usage['output_tokens']
+        ..['input_tokens_details'] = usage['input_tokens_details'];
+    }
+    return <String, Object?>{
+      'choices': <Map<String, Object?>>[
+        <String, Object?>{
+          'message': <String, Object?>{
+            'content': text.toString(),
+            'tool_calls': calls,
+          },
+          'finish_reason': response['status'],
+        },
+      ],
+      'usage': normalizedUsage,
+    };
   }
 
   Map<String, Object?> _openAiPayload(
@@ -1434,6 +1813,7 @@ class AiChatClient {
     Map<Object?, Object?> body,
   ) => switch (protocol) {
     AiWireProtocol.openAiCompatible => _openAiStopReason(body),
+    AiWireProtocol.openAiResponses => _openAiStopReason(body),
     AiWireProtocol.anthropicMessages =>
       body['stop_reason'] is String ? body['stop_reason'] as String : null,
     AiWireProtocol.geminiGenerateContent => _geminiStopReason(body),
@@ -1568,6 +1948,8 @@ class AiChatClient {
         if (key.isNotEmpty) {
           headers['authorization'] = 'Bearer $key';
         }
+      case AiWireProtocol.openAiResponses:
+        headers['authorization'] = 'Bearer $key';
       case AiWireProtocol.anthropicMessages:
         headers['x-api-key'] = key;
         headers['anthropic-version'] = '2023-06-01';

@@ -529,6 +529,36 @@ void main() {
       expect(saved.isUsable, isTrue);
     });
 
+    testWidgets('ChatGPT plan 预设不要求 API key，并显式提供计划登录与管理入口', (
+      WidgetTester tester,
+    ) async {
+      await pumpSection(tester);
+      await tapKey(tester, 'ai-provider-add');
+      await tapKey(tester, 'ai-provider-preset-openai_chatgpt_plan');
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pumpAndSettle();
+
+      final AiProviderConfig saved = prefs.aiProviders.single;
+      expect(saved.presetId, kAiChatGptPlanPresetId);
+      expect(saved.protocol, AiWireProtocol.openAiResponses);
+      expect(saved.apiKeys, isEmpty);
+      expect(saved.isUsable, isFalse, reason: '登录和模型仍待设置');
+      expect(
+        find.byKey(const ValueKey<String>('ai-provider-0-api-key')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('ai-provider-0-chatgpt-account')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(
+          const ValueKey<String>('ai-provider-0-manage-chatgpt-usage'),
+        ),
+        findsOneWidget,
+      );
+    });
+
     const InterconnectHostTarget desk = InterconnectHostTarget(
       hostId: 'host-1',
       displayName: 'Desk',
@@ -1926,6 +1956,13 @@ void main() {
         'empty_response',
         'provider_not_configured',
         'http_503',
+        'chatgpt_plan_connect',
+        'chatgpt_plan_auth_required',
+        'chatgpt_plan_scope_missing',
+        'chatgpt_plan_usage_limit',
+        'chatgpt_plan_service_unavailable',
+        'chatgpt_plan_unsupported_capability',
+        'chatgpt_plan_audio_unsupported',
       ]) {
         final String text = aiFailureText(code);
         expect(text, isNotEmpty);

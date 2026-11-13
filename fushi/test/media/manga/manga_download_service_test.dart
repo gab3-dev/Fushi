@@ -262,6 +262,62 @@ void main() {
     downloads.dispose();
   });
 
+  test('排队任务可暂停再恢复', () async {
+    final MangaDownloadService downloads = build();
+    final MangaDownloadJobRow queued = await downloads.enqueueChapter(
+      entry: _entry(),
+      chapter: _chapters.last,
+      autoOcr: false,
+    );
+    await downloads.pause(queued.jobId);
+    expect((await jobOf('/chapter/1')).status, MangaDownloadJobStatus.paused);
+
+    await downloads.start();
+    await downloads.whenIdle;
+    expect((await jobOf('/chapter/1')).status, MangaDownloadJobStatus.paused);
+
+    await downloads.resume(queued.jobId);
+    await downloads.whenIdle;
+    expect((await jobOf('/chapter/1')).status, MangaDownloadJobStatus.done);
+    downloads.dispose();
+  });
+
+  test('正在下载的章节暂停时保留已落盘页，恢复后从磁盘进度续跑', () async {
+    adapter.gate = Completer<void>();
+    final MangaDownloadService downloads = build();
+    final MangaDownloadJobRow queued = await downloads.enqueueChapter(
+      entry: _entry(),
+      chapter: _chapters.last,
+      autoOcr: false,
+    );
+    await downloads.start();
+    while ((adapter.fetchCounts[0] ?? 0) == 0) {
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+
+    await downloads.pause(queued.jobId);
+    adapter.gate!.complete();
+    await downloads.whenIdle;
+
+    expect((await jobOf('/chapter/1')).status, MangaDownloadJobStatus.paused);
+    final Directory chapterDir = mangaChapterDirectory(bookDir, '/chapter/1');
+    expect(chapterDir.existsSync(), isTrue);
+    expect(await isChapterDownloaded(bookDir, '/chapter/1'), isFalse);
+    final Map<int, int> fetchCountsAtPause = Map<int, int>.of(
+      adapter.fetchCounts,
+    );
+
+    adapter.gate = null;
+    await downloads.resume(queued.jobId);
+    await downloads.whenIdle;
+
+    expect((await jobOf('/chapter/1')).status, MangaDownloadJobStatus.done);
+    expect(adapter.fetchCounts[0], fetchCountsAtPause[0]);
+    expect(adapter.fetchCounts[1], fetchCountsAtPause[1]);
+    expect(adapter.fetchCounts[2], fetchCountsAtPause[2]);
+    downloads.dispose();
+  });
+
   test('单页连续失败 3 次 → failed + last_error，退避表被按序调用', () async {
     adapter.failuresLeft[1] = 99;
     final MangaDownloadService downloads = build();

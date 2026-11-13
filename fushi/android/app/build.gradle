@@ -146,6 +146,13 @@ def keystorePropertiesFile = rootProject.file('key.properties')
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 }
+// A personal/local release may use a distinct Android application id so it can
+// coexist with the official app. Keep this opt-in and developer-local: CI and
+// official releases omit the property and retain app.fushi.reader.
+def localApplicationIdSuffix = keystoreProperties.getProperty('localApplicationIdSuffix', '').trim()
+if (localApplicationIdSuffix && !(localApplicationIdSuffix ==~ /(?:\.[A-Za-z0-9_]+)+/)) {
+    throw new GradleException("Invalid localApplicationIdSuffix '${localApplicationIdSuffix}'. Use dotted package segments such as '.local'.")
+}
 
 def requireReleaseKeystore = {
     if (!keystorePropertiesFile.exists()) {
@@ -245,6 +252,13 @@ android {
 
     defaultConfig {
         applicationId "app.fushi.reader"
+        if (localApplicationIdSuffix) {
+            applicationIdSuffix localApplicationIdSuffix
+        }
+        manifestPlaceholders.put(
+            'fushiAppLabel',
+            localApplicationIdSuffix ? 'Fushi Local' : 'Fushi',
+        )
         minSdkVersion 24
         targetSdk 35
         versionCode flutterVersionCode.toInteger()

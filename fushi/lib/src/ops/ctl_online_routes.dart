@@ -1258,6 +1258,7 @@ class _OnlineCtl {
     final String id = call.params['id']!;
     final MangaDownloadJobRow row = await _requireMangaJob(id);
     if (row.status != MangaDownloadJobStatus.queued &&
+        row.status != MangaDownloadJobStatus.paused &&
         row.status != MangaDownloadJobStatus.running) {
       throw CtlFailure.conflict('任务已结束，不能取消（当前：${row.status}）');
     }

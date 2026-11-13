@@ -6,6 +6,7 @@ import 'package:cupertino_ui/cupertino_ui.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:fushi/src/ai/agent/ai_agent_entry.dart'
     show openAiAgentFromShortcut;
+import 'package:fushi/src/ai/chatgpt_plan_auth.dart';
 import 'package:fushi/src/ai/mcp/ai_mcp_ui.dart' show buildAiMcpHttpEndpoint;
 import 'package:fushi/src/corpus/corpus_origin_navigation.dart';
 import 'package:fushi/src/corpus/library_corpus_service.dart';
@@ -376,6 +377,7 @@ void main([List<String> args = const <String>[]]) {
       // 时序前置条件，而 `initialise()` 有两个 entry point 绕开它（弹窗词典与悬浮
       // 词典），写在 main 里哪个入口都不会漏。
       installEngineHostBindings();
+      ChatGptPlanAuthStore.instance.install();
       installAsrHostBindings();
       // 丢了抬起事件的指针补发取消，免得拖动识别器一直卡在「按着」（见该函数注释）。
       installStalePointerGuard();

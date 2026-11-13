@@ -3456,6 +3456,7 @@ abstract final class MangaDownloadJobKind {
 abstract final class MangaDownloadJobStatus {
   static const String queued = 'queued';
   static const String running = 'running';
+  static const String paused = 'paused';
   static const String done = 'done';
   static const String failed = 'failed';
   static const String cancelled = 'cancelled';
@@ -3524,7 +3525,7 @@ class MangaDownloadJobs extends Table {
     "CHECK (job_id != '' AND book_key != '' AND chapter_key != '' "
         "AND runtime != '')",
     "CHECK (kind IN ('chapter', 'mokuro_volume'))",
-    "CHECK (status IN ('queued', 'running', 'done', 'failed', "
+    "CHECK (status IN ('queued', 'running', 'paused', 'done', 'failed', "
         "'cancelled'))",
     'CHECK (pages_done >= 0 AND pages_total >= 0 '
         'AND pages_done <= pages_total)',

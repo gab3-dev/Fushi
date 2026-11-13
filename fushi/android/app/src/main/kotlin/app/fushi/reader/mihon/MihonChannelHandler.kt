@@ -19,7 +19,9 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.protobuf.ProtoBuf
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import uy.kohesive.injekt.Injekt
@@ -38,6 +40,25 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.ConcurrentHashMap
 
+@OptIn(ExperimentalSerializationApi::class)
+internal fun mihonInjektModule(app: Application): InjektModule = object : InjektModule {
+    override fun InjektRegistrar.registerInjectables() {
+        addSingleton(app)
+        addSingletonFactory { NetworkHelper(app) }
+        addSingletonFactory {
+            Json {
+                ignoreUnknownKeys = true
+                explicitNulls = false
+                coerceInputValues = true
+            }
+        }
+        // MANGA Plus and other extensions resolve ProtoBuf from Injekt in static
+        // initializers. Register the companion with an explicit type: inferred
+        // registration would use ProtoBuf.Default and still fail lookup.
+        addSingletonFactory<ProtoBuf> { ProtoBuf }
+    }
+}
+
 class MihonChannelHandler(private val app: Application) {
     private val executor: ExecutorService = Executors.newFixedThreadPool(2)
     // 页图单独一个池：取图（OkHttp callTimeout 最长 2 分钟）与页表 / 搜索 / 详情共用
@@ -54,21 +75,7 @@ class MihonChannelHandler(private val app: Application) {
     init {
         CloudflareChallengeCoordinator.initialize(app)
         Injekt = InjektScope(DefaultRegistrar())
-        Injekt.importModule(
-            object : InjektModule {
-                override fun InjektRegistrar.registerInjectables() {
-                    addSingleton(app)
-                    addSingletonFactory { NetworkHelper(app) }
-                    addSingletonFactory {
-                        Json {
-                            ignoreUnknownKeys = true
-                            explicitNulls = false
-                            coerceInputValues = true
-                        }
-                    }
-                }
-            },
-        )
+        Injekt.importModule(mihonInjektModule(app))
     }
 
     fun register(engine: FlutterEngine) {

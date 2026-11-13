@@ -67,6 +67,9 @@ class CloudflareChallengeActivity : Activity() {
             }.isSuccess
         }
         super.onCreate(state)
+        // The ResultReceiver extra was created in the main app process. Preserve the
+        // app loader for Parcelable extras before reading it in :network_challenge.
+        intent.setExtrasClassLoader(CloudflareChallengeActivity::class.java.classLoader)
         receiver = intent.getParcelableExtra("receiver")
         receiver?.send(RESULT_FIRST_USER, Bundle().apply {
             putParcelable("control", object : ResultReceiver(main) {

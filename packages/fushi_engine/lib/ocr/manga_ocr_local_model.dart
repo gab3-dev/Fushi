@@ -196,9 +196,10 @@ Future<int> _deleteRemovedMangaOcrLegacyFiles(Directory legacy) async {
 /// 漫画逐列 CTC 的列识别权重：Kellenok/PP-OCRv6_manga 的 rec v0.2（Apache-2.0，在
 /// PP-OCRv6 small rec 上用 Manga109-s 与 AnimeText 微调）。与 PP-OCRv6 small rec 同
 /// 输入契约、同一份 18710 项词表，字典沿用 [kPpOcrRecDictFileName]。钉 revision 的
-/// 理由同 PP-OCRv6（`main` 可变）；该 revision 下 LFS sha256 为
+/// v0.2 分支的固定 commit（HF 后来把仓库主干升级到 v0.3 并删除了旧路径）；该
+/// revision 下 LFS sha256 为
 /// de12c84c63e62c80339e882e675983d886670dcb6f0147e1ed041afd6fa81888。
-const String kMangaCtcRecRevision = 'ba1d479e8a61a20e8318c9758c73fbbbd290b98d';
+const String kMangaCtcRecRevision = 'a172b33d369b4246b897ed458e83e9dbac36878b';
 const String kMangaCtcRecFileName = 'kellenok_manga_rec_v0.2.onnx';
 
 /// 逐列 CTC：检测器 + PP-OCRv6 small det（列 / 行检测）+ 字典 + 漫画 rec（竖列与横行
@@ -232,7 +233,7 @@ const List<MangaOcrModelFile> kMangaCtcOcrModelManifest = <MangaOcrModelFile>[
     fileName: kMangaCtcRecFileName,
     url:
         'https://huggingface.co/Kellenok/PP-OCRv6_manga/'
-        'resolve/$kMangaCtcRecRevision/rec/manga_rec_v0.2.onnx',
+        'resolve/$kMangaCtcRecRevision/rec/manga_rec.onnx',
     expectedBytes: 21167540,
     role: MangaOcrModelRole.recognizer,
   ),

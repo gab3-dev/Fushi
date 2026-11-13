@@ -24,6 +24,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:fushi/src/utils/components/glass/fushi_icon.dart';
+import 'package:fushi/src/ai/chatgpt_plan_auth.dart';
 import 'package:fushi_engine/ai/ai_chat_client.dart';
 import 'package:fushi_engine/ai/ai_feature.dart';
 import 'package:fushi_engine/ai/ai_key_rotation.dart';
@@ -47,6 +48,8 @@ import 'package:fushi/src/settings/settings_schema_widgets.dart'
     show SettingsSectionFooter;
 import 'package:fushi/i18n/strings.g.dart';
 import 'package:fushi/src/utils/adaptive/adaptive_platform.dart';
+import 'package:fushi/src/utils/adaptive/adaptive_widgets.dart'
+    show adaptiveDialogAction;
 import 'package:fushi/src/utils/components/fushi_design_tokens.dart';
 import 'package:fushi/src/utils/components/fushi_inline_notice.dart';
 import 'package:fushi/src/utils/components/fushi_material_components.dart';
@@ -56,6 +59,7 @@ import 'package:fushi/src/utils/components/glass/fushi_glass_feedback.dart';
 import 'package:fushi/src/utils/components/glass/fushi_glass_inputs.dart';
 import 'package:fushi/src/utils/components/glass/fushi_glass_lists.dart';
 import 'package:fushi/src/utils/components/glass/fushi_glass_overlays.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:fushi/src/utils/components/settings_shared.dart';
 import 'package:fushi/src/utils/misc/show_app_dialog.dart';
 import 'package:fushi/src/utils/fushi_icons.dart';
@@ -297,7 +301,11 @@ class _AiProviderSettingsSectionState
           presentation: SettingsSectionPresentation.collapsed,
           children: <Widget>[
             for (final AiFeature feature in AiFeature.values)
-              if (_featureAvailableOnThisStore(feature)) _featureRow(feature),
+              if (_featureAvailableOnThisStore(feature)) ...<Widget>[
+                _featureRow(feature),
+                if (feature == AiFeature.cloudTranscription)
+                  SettingsSectionFooter(t.ai_provider_chatgpt_plan_audio_hint),
+              ],
           ],
         ),
         SettingsSectionFooter(t.ai_features_section_summary),
@@ -454,6 +462,9 @@ class _AiProviderSettingsSectionState
   Widget _providerEditor(BuildContext pageContext, int index) {
     if (_drafts[index].relay != null) {
       return _relayProviderEditor(pageContext, index);
+    }
+    if (_drafts[index].usesChatGptPlan) {
+      return _chatGptPlanProviderEditor(pageContext, index);
     }
     final _AiProviderDraft draft = _drafts[index];
     final AiProviderConfig? config = draft.toConfig();
@@ -659,7 +670,10 @@ class _AiProviderSettingsSectionState
                         semanticLabel: t.ai_provider_protocol,
                         labels: <String>[
                           for (final AiWireProtocol protocol
-                              in AiWireProtocol.values)
+                              in AiWireProtocol.values.where(
+                                (AiWireProtocol protocol) =>
+                                    protocol != AiWireProtocol.openAiResponses,
+                              ))
                             _protocolLabel(protocol),
                         ],
                         selectedIndex: draft.protocol.index,
@@ -798,6 +812,263 @@ class _AiProviderSettingsSectionState
         ),
       ],
     );
+  }
+
+  Widget _chatGptPlanProviderEditor(BuildContext pageContext, int index) {
+    final _AiProviderDraft draft = _drafts[index];
+    final AiProviderConfig? config = draft.toConfig();
+    final _ProbeState? probe = _probes[draft.id];
+    final bool busy = probe?.running ?? false;
+    final bool connected =
+        draft.chatGptPlanCredentialId?.trim().isNotEmpty == true;
+    final double rowInset = FushiDesignTokens.of(
+      pageContext,
+    ).spacing.rowHorizontal;
+    Widget field(Widget child) => Padding(
+      padding: EdgeInsets.fromLTRB(rowInset, 12, rowInset, 10),
+      child: child,
+    );
+
+    return Column(
+      key: ValueKey<String>('ai-provider-${draft.id}-editor'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        AdaptiveSettingsSection(
+          children: <Widget>[
+            AdaptiveSettingsSwitchRow(
+              key: ValueKey<String>('ai-provider-$index-enabled'),
+              title: t.ai_provider_enabled,
+              subtitle: (config?.isUsable ?? false)
+                  ? t.ai_provider_ready
+                  : t.ai_provider_incomplete,
+              value: draft.enabled,
+              onChanged: (bool value) =>
+                  _update(index, draft.copyWith(enabled: value)),
+            ),
+          ],
+        ),
+        AdaptiveSettingsSection(
+          title: t.ai_provider_preset_openai_plan,
+          children: <Widget>[
+            field(
+              _textField(
+                key: ValueKey<String>('ai-provider-$index-name'),
+                label: t.ai_provider_name,
+                initialValue: draft.name,
+                onChanged: (String value) =>
+                    _update(index, draft.copyWith(name: value)),
+              ),
+            ),
+            AdaptiveSettingsRow(
+              key: ValueKey<String>('ai-provider-$index-chatgpt-account'),
+              icon: FushiIcons.ai,
+              showIcon: true,
+              title: connected
+                  ? t.ai_provider_chatgpt_plan_connected
+                  : t.ai_provider_chatgpt_plan_sign_in,
+              onTap: busy ? null : () => unawaited(_connectChatGptPlan(index)),
+              trailing: busy
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: FushiCircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : null,
+            ),
+            field(
+              _textField(
+                key: ValueKey<String>('ai-provider-$index-model'),
+                label: t.ai_provider_model,
+                controller: _modelController(draft),
+                hintText: t.ai_provider_model_hint,
+                suffixIcon: _modelPickerButton(index, draft),
+                onChanged: (String value) =>
+                    _update(index, draft.copyWith(model: value)),
+              ),
+            ),
+            AdaptiveSettingsSwitchRow(
+              key: ValueKey<String>('ai-provider-$index-accepts-images'),
+              title: t.ai_provider_accepts_images,
+              subtitle: t.ai_provider_accepts_images_summary,
+              value: draft.acceptsImages,
+              onChanged: (bool value) =>
+                  _update(index, draft.copyWith(acceptsImages: value)),
+            ),
+          ],
+        ),
+        SettingsSectionFooter(t.ai_provider_chatgpt_plan_summary),
+        AdaptiveSettingsSection(
+          children: <Widget>[
+            AdaptiveSettingsRow(
+              key: ValueKey<String>('ai-provider-$index-fetch-models'),
+              icon: FushiIcons.download,
+              showIcon: true,
+              title: t.ai_provider_models_fetch,
+              onTap: config == null || !connected || busy
+                  ? null
+                  : () => unawaited(_fetchModels(draft)),
+            ),
+            AdaptiveSettingsRow(
+              key: ValueKey<String>('ai-provider-$index-test'),
+              icon: FushiIcons.wifi,
+              showIcon: true,
+              title: t.ai_provider_test,
+              onTap: config == null || !connected || busy
+                  ? null
+                  : () => unawaited(_testConnection(draft)),
+            ),
+            AdaptiveSettingsRow(
+              key: ValueKey<String>('ai-provider-$index-manage-chatgpt-usage'),
+              icon: FushiIcons.openInNew,
+              showIcon: true,
+              title: t.ai_provider_chatgpt_plan_manage_usage,
+              onTap: () => unawaited(
+                launchUrl(
+                  Uri.parse('https://chatgpt.com/settings/usage'),
+                  mode: LaunchMode.externalApplication,
+                ),
+              ),
+            ),
+          ],
+        ),
+        if (probe != null && !probe.running)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: FushiInlineNotice(
+              key: ValueKey<String>('ai-provider-$index-probe-result'),
+              severity: probe.ok
+                  ? FushiNoticeSeverity.success
+                  : FushiNoticeSeverity.error,
+              message: probe.message,
+            ),
+          ),
+        if (connected)
+          Center(
+            child: FushiTextButton(
+              key: ValueKey<String>('ai-provider-$index-chatgpt-disconnect'),
+              onPressed: busy
+                  ? null
+                  : () => unawaited(_disconnectChatGptPlan(index)),
+              child: Text(t.ai_provider_chatgpt_plan_disconnect),
+            ),
+          ),
+        Center(
+          child: FushiTextButton.icon(
+            key: ValueKey<String>('ai-provider-$index-delete'),
+            destructive: true,
+            onPressed: () {
+              Navigator.of(pageContext).pop();
+              _delete(index);
+            },
+            icon: const FushiIcon(FushiIcons.delete),
+            label: Text(t.ai_provider_delete),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _connectChatGptPlan(int index) async {
+    final _AiProviderDraft draft = _drafts[index];
+    setState(() => _probes[draft.id] = const _ProbeState.running());
+    try {
+      final ChatGptPlanAccount account = await ChatGptPlanAuthStore.instance
+          .signIn(credentialId: draft.id);
+      if (!mounted) return;
+      final bool needsWelcome = await ChatGptPlanAuthStore.instance
+          .needsWelcome(draft.id);
+      if (!mounted) return;
+      if (needsWelcome) {
+        await showAppDialog<void>(
+          context: context,
+          builder: (BuildContext dialogContext) => FushiAlertDialog.adaptive(
+            key: const ValueKey<String>('ai-chatgpt-plan-welcome'),
+            title: Text(t.ai_provider_chatgpt_plan_welcome_title),
+            content: Text(t.ai_provider_chatgpt_plan_welcome_body),
+            actions: <Widget>[
+              adaptiveDialogAction(
+                context: dialogContext,
+                onPressed: () => Navigator.pop(dialogContext),
+                child: Text(t.ai_provider_chatgpt_plan_welcome_dismiss),
+              ),
+            ],
+          ),
+        );
+        await ChatGptPlanAuthStore.instance.markWelcomeShown(draft.id);
+      }
+      if (!mounted) return;
+      final int currentIndex = _drafts.indexWhere(
+        (_AiProviderDraft value) => value.id == draft.id,
+      );
+      if (currentIndex < 0) return;
+      final _AiProviderDraft current = _drafts[currentIndex];
+      final _AiProviderDraft connected = current.copyWith(
+        chatGptPlanCredentialId: draft.id,
+      );
+      _update(currentIndex, connected);
+      setState(
+        () => _probes[draft.id] = _ProbeState.done(
+          ok: true,
+          message: t.ai_provider_chatgpt_plan_connected_as(
+            account: account.accountLabel,
+          ),
+        ),
+      );
+      if (connected.model.trim().isEmpty) {
+        unawaited(_fetchModels(connected));
+      }
+    } on AiChatFailure catch (failure) {
+      if (!mounted) return;
+      setState(
+        () => _probes[draft.id] = _ProbeState.done(
+          ok: false,
+          message: aiFailureText(failure.message),
+        ),
+      );
+    } on Object {
+      if (!mounted) return;
+      setState(
+        () => _probes[draft.id] = _ProbeState.done(
+          ok: false,
+          message: t.ai_error_chatgpt_plan_connect,
+        ),
+      );
+    }
+  }
+
+  Future<void> _disconnectChatGptPlan(int index) async {
+    final _AiProviderDraft draft = _drafts[index];
+    setState(() => _probes[draft.id] = const _ProbeState.running());
+    final bool revoked;
+    try {
+      revoked = await ChatGptPlanAuthStore.instance.signOut(draft.id);
+    } on Object {
+      if (mounted) {
+        setState(
+          () => _probes[draft.id] = _ProbeState.done(
+            ok: false,
+            message: t.ai_error_chatgpt_plan_connect,
+          ),
+        );
+      }
+      return;
+    }
+    if (!mounted) return;
+    final int currentIndex = _drafts.indexWhere(
+      (_AiProviderDraft value) => value.id == draft.id,
+    );
+    if (currentIndex < 0) return;
+    _update(
+      currentIndex,
+      _drafts[currentIndex].copyWith(chatGptPlanCredentialId: ''),
+    );
+    setState(() => _probes.remove(draft.id));
+    if (!revoked) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        FushiSnackBar(
+          content: Text(t.ai_provider_chatgpt_plan_revoke_unconfirmed),
+        ),
+      );
+    }
   }
 
   /// 互联主机提供商的编辑页：启用 / 名称 / 主机上的哪家提供商 / 测试连接 / 删除。
@@ -1397,7 +1668,9 @@ class _AiProviderSettingsSectionState
     // 云端语音转录要上传音频到转录端点，互联主机提供商只转发对话补全，不列。
     final List<AiProviderConfig> usable = <AiProviderConfig>[
       for (final AiProviderConfig c in _usableProviders())
-        if (feature != AiFeature.cloudTranscription || !c.isInterconnectHost) c,
+        if (c.supportsCloudTranscription &&
+            (feature != AiFeature.cloudTranscription || !c.isInterconnectHost))
+          c,
     ];
     final String? assigned = _assignments.providerIdFor(feature);
     // 显式指派的那家没配全 / 已停用 / 根本不在清单里：运行时 resolve 一律回 null、
@@ -1530,6 +1803,7 @@ class _AiProviderSettingsSectionState
 
   void _delete(int index) {
     final String id = _drafts[index].id;
+    final bool isChatGptPlan = _drafts[index].usesChatGptPlan;
     setState(() {
       _probes.remove(id);
       _models.remove(id);
@@ -1543,6 +1817,30 @@ class _AiProviderSettingsSectionState
         (AiFeatureAssignments current) => current.withoutProvider(id),
       ),
     );
+    if (isChatGptPlan) unawaited(_removeDeletedChatGptPlan(id));
+  }
+
+  Future<void> _removeDeletedChatGptPlan(String credentialId) async {
+    try {
+      final bool revoked = await ChatGptPlanAuthStore.instance.signOut(
+        credentialId,
+      );
+      if (!revoked && mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          FushiSnackBar(
+            content: Text(t.ai_provider_chatgpt_plan_revoke_unconfirmed),
+          ),
+        );
+      }
+    } on Object {
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          FushiSnackBar(
+            content: Text(t.ai_provider_chatgpt_plan_revoke_unconfirmed),
+          ),
+        );
+      }
+    }
   }
 
   void _setAssignment(AiFeature feature, String? providerId) {
@@ -1810,6 +2108,7 @@ class _AiProviderSettingsSectionState
   /// 协议名是 wire 事实（各家 API 文档里的原名），不翻译。
   String _protocolLabel(AiWireProtocol protocol) => switch (protocol) {
     AiWireProtocol.openAiCompatible => 'OpenAI Compatible',
+    AiWireProtocol.openAiResponses => 'OpenAI Responses',
     AiWireProtocol.anthropicMessages => 'Anthropic Messages',
     AiWireProtocol.geminiGenerateContent => 'Gemini generateContent',
   };
@@ -1851,6 +2150,7 @@ class _AiProviderDraft {
     this.pricing = const AiModelPricing(),
     this.acceptsImages = false,
     this.relay,
+    this.chatGptPlanCredentialId,
   });
 
   /// 选了一台互联主机后的新草稿：先指向主机的默认提供商，编辑页再现拉清单细选。
@@ -1890,6 +2190,7 @@ class _AiProviderDraft {
         pricing: config.pricing,
         acceptsImages: config.acceptsImages,
         relay: config.relay,
+        chatGptPlanCredentialId: config.chatGptPlanCredentialId,
       );
 
   /// 选了一家预设后的新草稿。
@@ -1905,7 +2206,9 @@ class _AiProviderDraft {
     id: id,
     presetId: preset.id,
     name: preset.displayName,
-    apiKeys: <_AiKeyDraft>[_AiKeyDraft.empty()],
+    apiKeys: preset.id == kAiChatGptPlanPresetId
+        ? const <_AiKeyDraft>[]
+        : <_AiKeyDraft>[_AiKeyDraft.empty()],
     baseUrl: preset.baseUrl,
     model: preset.suggestedModel,
     protocol: preset.protocol,
@@ -1914,6 +2217,7 @@ class _AiProviderDraft {
     // 本地服务默认地址是 loopback HTTP，不勾这个开关就连构造都过不去。
     allowInsecureHttp: preset.isLocal,
     requestsPerMinute: 0,
+    acceptsImages: preset.id == kAiChatGptPlanPresetId,
   );
 
   final String id;
@@ -1945,6 +2249,9 @@ class _AiProviderDraft {
 
   /// 非 null = 互联主机提供商（见 [AiProviderConfig.relay]）。
   final AiRelayTarget? relay;
+  final String? chatGptPlanCredentialId;
+
+  bool get usesChatGptPlan => presetId == kAiChatGptPlanPresetId;
 
   String get presetDisplayName => relay != null
       ? t.ai_provider_preset_interconnect
@@ -1967,6 +2274,7 @@ class _AiProviderDraft {
     AiModelPricing? pricing,
     bool? acceptsImages,
     AiRelayTarget? relay,
+    String? chatGptPlanCredentialId,
   }) => _AiProviderDraft(
     id: id,
     presetId: presetId,
@@ -1983,6 +2291,8 @@ class _AiProviderDraft {
     pricing: pricing ?? this.pricing,
     acceptsImages: acceptsImages ?? this.acceptsImages,
     relay: relay ?? this.relay,
+    chatGptPlanCredentialId:
+        chatGptPlanCredentialId ?? this.chatGptPlanCredentialId,
   );
 
   /// 有效即返回配置，否则 null。
@@ -2027,6 +2337,7 @@ class _AiProviderDraft {
         toolCallingOverride: toolCallingOverride,
         pricing: pricing,
         acceptsImages: acceptsImages,
+        chatGptPlanCredentialId: chatGptPlanCredentialId,
       );
     } on ArgumentError {
       return null;

@@ -4,10 +4,9 @@
 /// 自开关、整份列表存进一个偏好键的 JSON 数组），刻意不另发明一套——本仓已有的
 /// Jellyfin / qBittorrent / Torznab / 互联对端 / OPDS 全是这个范式。
 ///
-/// 与那几家的差别只有一处：AI 提供商之间**协议不同**（OpenAI 兼容 / Anthropic
-/// Messages / Gemini generateContent），所以多一个 [AiWireProtocol] 字段，由
-/// 调用层按它分派。绝大多数厂商都提供 OpenAI 兼容端点，只有 Anthropic 与 Gemini
-/// 需要各自的 wire 形状。
+/// AI 提供商之间**协议不同**（OpenAI Chat Completions / Responses / Anthropic Messages /
+/// Gemini generateContent），所以多一个 [AiWireProtocol] 字段，由调用层按它分派。
+/// 绝大多数厂商都提供 OpenAI 兼容端点；ChatGPT 订阅授权走官方 Responses API。
 library;
 
 import 'dart:convert';
@@ -22,6 +21,9 @@ enum AiWireProtocol {
   /// `POST {baseUrl}/chat/completions`，OpenAI 的 Chat Completions 形状。
   /// 绝大多数厂商（含国内厂商的兼容端点）都走这个。
   openAiCompatible,
+
+  /// OpenAI Responses API with Sign in with ChatGPT plan credentials.
+  openAiResponses,
 
   /// `POST {baseUrl}/v1/messages`，Anthropic Messages API。
   anthropicMessages,
@@ -89,8 +91,8 @@ enum AiToolCallingOverride {
   }
 }
 
-/// 一个内置提供商预设：把「地址 + 协议 + 一个能用的起点模型」打包好，用户加一家
-/// 提供商时只需要填 API Key。
+/// 一个内置提供商预设：把「地址 + 协议 + 一个能用的起点模型」打包好，用户添加后
+/// 通常只需填 API key；ChatGPT plan 预设改用 Sign in with ChatGPT。
 ///
 /// [suggestedModel] 只是**起点**，模型名随厂商迭代必然过时——所以配置界面同时提供
 /// 「拉取模型列表」（各协议都有对应的列表端点）和自由输入，不把用户钉死在这个默认值上。
@@ -130,12 +132,21 @@ class AiProviderPreset {
 
 /// 自定义提供商的预设 id——用户自己填地址和协议。
 const String kAiCustomPresetId = 'custom';
+const String kAiChatGptPlanPresetId = 'openai_chatgpt_plan';
 
 /// 内置提供商清单。
 ///
 /// 只收「有公开 API 且当前仍在服务」的主流厂商，按中文用户实际会用到的顺序排。
 /// 新增一家只需要在这里加一条：配置界面、协议分派、持久化都从这份清单推导。
 const List<AiProviderPreset> kAiProviderPresets = <AiProviderPreset>[
+  AiProviderPreset(
+    id: kAiChatGptPlanPresetId,
+    displayName: 'OpenAI ChatGPT plan',
+    protocol: AiWireProtocol.openAiResponses,
+    baseUrl: 'https://api.openai.com/v1',
+    requiresApiKey: false,
+    supportsTools: true,
+  ),
   AiProviderPreset(
     id: 'openai',
     displayName: 'OpenAI',
@@ -392,6 +403,7 @@ class AiProviderConfig {
     this.pricing = const AiModelPricing(),
     this.acceptsImages = false,
     this.relay,
+    this.chatGptPlanCredentialId,
   }) : apiKeys = List<AiApiKey>.unmodifiable(
          apiKeys ??
              (apiKey.isEmpty
@@ -404,6 +416,16 @@ class AiProviderConfig {
     );
     if (id.trim().isEmpty) {
       throw ArgumentError.value(id, 'id', 'AI provider id must not be empty');
+    }
+    if (usesChatGptPlan &&
+        (protocol != AiWireProtocol.openAiResponses ||
+            baseUrl.origin != 'https://api.openai.com')) {
+      throw ArgumentError('ChatGPT plan providers must use OpenAI Responses');
+    }
+    if (protocol == AiWireProtocol.openAiResponses && !usesChatGptPlan) {
+      throw ArgumentError(
+        'OpenAI Responses requires ChatGPT plan authorization',
+      );
     }
     // 互联主机提供商不连 [baseUrl]（请求走已配对主机的鉴权通道），地址规则不适用。
     if (relay != null) {
@@ -517,6 +539,7 @@ class AiProviderConfig {
             )
           : const AiModelPricing(),
       acceptsImages: json['images'] as bool? ?? false,
+      chatGptPlanCredentialId: json['chatGptPlanCredentialId'] as String?,
     );
   }
 
@@ -605,6 +628,12 @@ class AiProviderConfig {
   /// 主机转发，本条的地址 / 协议 / key / 限频都不参与调用。
   final AiRelayTarget? relay;
 
+  /// Secure-storage credential reference. OAuth tokens are never stored here.
+  final String? chatGptPlanCredentialId;
+
+  bool get usesChatGptPlan => presetId == kAiChatGptPlanPresetId;
+  bool get supportsCloudTranscription => !usesChatGptPlan;
+
   bool get isInterconnectHost => relay != null;
 
   String get displayName => name.trim().isNotEmpty ? name.trim() : baseUrl.host;
@@ -624,6 +653,11 @@ class AiProviderConfig {
     }
     if (!enabled || model.trim().isEmpty) {
       return false;
+    }
+    if (usesChatGptPlan) {
+      return protocol == AiWireProtocol.openAiResponses &&
+          baseUrl.origin == 'https://api.openai.com' &&
+          chatGptPlanCredentialId?.trim().isNotEmpty == true;
     }
     final bool needsKey = preset?.requiresApiKey ?? true;
     return !needsKey || activeApiKeys.isNotEmpty;
@@ -646,6 +680,7 @@ class AiProviderConfig {
     AiModelPricing? pricing,
     bool? acceptsImages,
     AiRelayTarget? relay,
+    String? chatGptPlanCredentialId,
   }) => AiProviderConfig(
     id: id,
     presetId: presetId,
@@ -666,16 +701,18 @@ class AiProviderConfig {
     pricing: pricing ?? this.pricing,
     acceptsImages: acceptsImages ?? this.acceptsImages,
     relay: relay ?? this.relay,
+    chatGptPlanCredentialId:
+        chatGptPlanCredentialId ?? this.chatGptPlanCredentialId,
   );
 
   /// API Key 在 JSON 里 base64 存放：`apiKeys` 是完整有序列表（空白草稿不落盘），
   /// 另把第一把参与请求的 key 照旧写进单 key 时代的 `apiKeyB64`——降级回旧版本时
   /// 旧解码器只认那一个字段，这样旧版至少还能用第一把 key 继续工作。
   ///
-  /// 说清楚：这是**遮蔽不是加密**——能解码回来的东西挡不住拿到设备的人。本仓没有
-  /// secure storage，既有做法（OPDS 密码、同步服务器密码）同样是 base64。真正被
-  /// 执行的纪律不在编码强度，而在**隔离**：本键登记进 `kCredentialPreferenceKeys`
-  /// （绝不写日志、绝不进明文导出）与 device-local 清单（绝不随备份/同步出设备）。
+  /// API key 的 base64 是**遮蔽不是加密**——能解码回来的东西挡不住拿到设备的人；
+  /// ChatGPT OAuth access / refresh tokens 不走这里，而存进平台 secure storage。API
+  /// key 的纪律在**隔离**：本键登记进 `kCredentialPreferenceKeys`（绝不写日志、绝不进
+  /// 明文导出）与 device-local 清单（绝不随备份/同步出设备）。
   Map<String, Object?> toJson() => relay != null
       ? <String, Object?>{
           'id': id,
@@ -715,6 +752,8 @@ class AiProviderConfig {
             'toolCalling': toolCallingOverride.storageKey,
           if (!pricing.isEmpty) 'pricing': pricing.toJson(),
           if (acceptsImages) 'images': true,
+          if (chatGptPlanCredentialId?.isNotEmpty == true)
+            'chatGptPlanCredentialId': chatGptPlanCredentialId,
         };
 }
 

@@ -644,6 +644,17 @@ class _DownloadTaskBrowserState extends State<DownloadTaskBrowser> {
     );
   }
 
+  VoidCallback? _groupAction(
+    List<DownloadTaskEntry> tasks,
+    DownloadBatchAction action,
+  ) {
+    if (_batchRunning || countDownloadTasksSupporting(tasks, action) == 0) {
+      return null;
+    }
+    return () =>
+        unawaited(_runBatchOn(List<DownloadTaskEntry>.of(tasks), action));
+  }
+
   Widget _buildStatusFilter() => FushiSegmentedStrip<DownloadTaskStatusFilter>(
     key: const ValueKey<String>('download-task-status-filter'),
     segments: <ButtonSegment<DownloadTaskStatusFilter>>[
@@ -798,6 +809,7 @@ class _DownloadTaskBrowserState extends State<DownloadTaskBrowser> {
             onOpenExecutionSettings: widget.onOpenExecutionSettings,
             onPauseAll: _allAction(DownloadBatchAction.pause),
             onResumeAll: _allAction(DownloadBatchAction.resume),
+            onCancelAll: _allAction(DownloadBatchAction.cancel),
           ),
           SizedBox(height: tokens.spacing.gap + 4),
         ],
@@ -868,6 +880,63 @@ class _DownloadTaskBrowserState extends State<DownloadTaskBrowser> {
                     '$completed / ${group.value.length}',
                     style: context.fushiType.labelLarge.tabular,
                   ),
+                  if (!_selectionMode &&
+                      <DownloadBatchAction>[
+                        DownloadBatchAction.pause,
+                        DownloadBatchAction.resume,
+                        DownloadBatchAction.cancel,
+                      ].any(
+                        (DownloadBatchAction action) =>
+                            countDownloadTasksSupporting(group.value, action) >
+                            0,
+                      ))
+                    FushiOverflowMenu<String>(
+                      key: ValueKey<String>('download-group-actions-$key'),
+                      tooltip: t.common_more_actions,
+                      iconWidget: const FushiIcon(FushiIcons.more),
+                      onSelected: (String action) {
+                        final DownloadBatchAction selected = DownloadBatchAction
+                            .values
+                            .byName(action);
+                        final VoidCallback? run = _groupAction(
+                          group.value,
+                          selected,
+                        );
+                        run?.call();
+                      },
+                      items: <PopupMenuEntry<String>>[
+                        if (countDownloadTasksSupporting(
+                              group.value,
+                              DownloadBatchAction.pause,
+                            ) >
+                            0)
+                          FushiPopupMenuItem<String>(
+                            value: DownloadBatchAction.pause.name,
+                            icon: FushiIcons.pause,
+                            label: t.download_task_group_pause,
+                          ),
+                        if (countDownloadTasksSupporting(
+                              group.value,
+                              DownloadBatchAction.resume,
+                            ) >
+                            0)
+                          FushiPopupMenuItem<String>(
+                            value: DownloadBatchAction.resume.name,
+                            icon: FushiIcons.play,
+                            label: t.download_task_group_resume,
+                          ),
+                        if (countDownloadTasksSupporting(
+                              group.value,
+                              DownloadBatchAction.cancel,
+                            ) >
+                            0)
+                          FushiPopupMenuItem<String>(
+                            value: DownloadBatchAction.cancel.name,
+                            icon: FushiIcons.close,
+                            label: t.download_task_group_cancel,
+                          ),
+                      ],
+                    ),
                   // 整组删除：目标是这一组的全部成员（含折叠着的）——组头就是
                   // 这一组本身，确认框会写明条数。
                   if (!_selectionMode &&
@@ -1221,6 +1290,7 @@ class DownloadSummaryHero extends StatelessWidget {
     this.onOpenExecutionSettings,
     this.onPauseAll,
     this.onResumeAll,
+    this.onCancelAll,
   });
 
   final List<DownloadTaskEntry> tasks;
@@ -1228,6 +1298,7 @@ class DownloadSummaryHero extends StatelessWidget {
   final VoidCallback? onOpenExecutionSettings;
   final VoidCallback? onPauseAll;
   final VoidCallback? onResumeAll;
+  final VoidCallback? onCancelAll;
 
   @override
   Widget build(BuildContext context) {
@@ -1321,7 +1392,9 @@ class DownloadSummaryHero extends StatelessWidget {
               ),
             ],
           ),
-          if (onPauseAll != null || onResumeAll != null) ...<Widget>[
+          if (onPauseAll != null ||
+              onResumeAll != null ||
+              onCancelAll != null) ...<Widget>[
             const SizedBox(height: 16),
             LayoutBuilder(
               builder: (BuildContext context, BoxConstraints constraints) {
@@ -1337,6 +1410,11 @@ class DownloadSummaryHero extends StatelessWidget {
                     onPressed: onResumeAll,
                     icon: const FushiIcon(FushiIcons.play),
                     label: Text(t.download_resume_all),
+                  ),
+                  FushiTextButton(
+                    key: const ValueKey<String>('download-summary-cancel-all'),
+                    onPressed: onCancelAll,
+                    child: Text(t.download_cancel_all),
                   ),
                 ];
                 // 够宽时是 M3E 按钮组（按下变宽挤压邻居）；窄屏 / 大字号换行。

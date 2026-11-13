@@ -172,6 +172,7 @@ String mangaDownloadJobId({
 /// `cancelled` 并删半成品，后者只是进程要退出，行保持 `running` 留给下次启动续跑。
 class _CancelToken {
   bool cancelled = false;
+  bool paused = false;
   bool stopped = false;
 }
 
@@ -388,6 +389,7 @@ class MangaDownloadService {
     );
     if (existing != null &&
         (existing.status == MangaDownloadJobStatus.queued ||
+            existing.status == MangaDownloadJobStatus.paused ||
             existing.status == MangaDownloadJobStatus.running)) {
       return (row: existing, added: false);
     }
@@ -458,6 +460,7 @@ class MangaDownloadService {
       switch (existing.status) {
         case MangaDownloadJobStatus.queued:
         case MangaDownloadJobStatus.running:
+        case MangaDownloadJobStatus.paused:
           return existing;
         case MangaDownloadJobStatus.done:
           final EpubBookRow? row = await _database.getEpubBook(bookKey);
@@ -506,7 +509,7 @@ class MangaDownloadService {
     }
   }
 
-  /// 取消：`queued` 直接改状态；正在飞的任务中止并删半成品目录。
+  /// 取消：`queued` / `paused` 直接改状态；正在飞的任务中止并删半成品目录。
   Future<void> cancel(String jobId) async {
     final MangaDownloadJobRow? row = await _database.getMangaDownloadJob(jobId);
     if (row == null) return;
@@ -517,6 +520,7 @@ class MangaDownloadService {
       return;
     }
     if (row.status == MangaDownloadJobStatus.queued ||
+        row.status == MangaDownloadJobStatus.paused ||
         row.status == MangaDownloadJobStatus.running) {
       await _database.updateMangaDownloadJobStatus(
         jobId,
@@ -525,6 +529,40 @@ class MangaDownloadService {
       );
       await _discardPartialDownload(row);
     }
+  }
+
+  /// 暂停：保留已下载页 / mokuro staging，稍后可从磁盘进度继续。
+  Future<void> pause(String jobId) async {
+    final MangaDownloadJobRow? row = await _database.getMangaDownloadJob(jobId);
+    if (row == null) return;
+    if (row.status == MangaDownloadJobStatus.queued) {
+      await _database.updateMangaDownloadJobStatus(
+        jobId,
+        status: MangaDownloadJobStatus.paused,
+        updatedAt: _now,
+      );
+      return;
+    }
+    final _ActiveJob? active = _active;
+    if (row.status == MangaDownloadJobStatus.running &&
+        active != null &&
+        active.jobId == jobId) {
+      active.token.paused = true;
+      active.abort?.call();
+    }
+  }
+
+  /// 恢复暂停任务；任务仍使用原队列项和原来的创建顺序。
+  Future<void> resume(String jobId) async {
+    final MangaDownloadJobRow? row = await _database.getMangaDownloadJob(jobId);
+    if (row == null || row.status != MangaDownloadJobStatus.paused) return;
+    await _database.updateMangaDownloadJobStatus(
+      jobId,
+      status: MangaDownloadJobStatus.queued,
+      updatedAt: _now,
+      clearLastError: true,
+    );
+    _kick();
   }
 
   /// 重试 `failed` / `cancelled` 的任务。
@@ -668,6 +706,13 @@ class MangaDownloadService {
       } on _Stopped {
         // 服务停止：行保持 running，下次 start() 复位成 queued 续跑。
         return;
+      } on _Paused {
+        await _database.updateMangaDownloadJobStatus(
+          job.jobId,
+          status: MangaDownloadJobStatus.paused,
+          updatedAt: _now,
+        );
+        return;
       } on _Cancelled {
         await _database.updateMangaDownloadJobStatus(
           job.jobId,
@@ -677,6 +722,23 @@ class MangaDownloadService {
         await _discardPartialDownload(job);
         return;
       } on Object catch (error, stack) {
+        if (token.cancelled) {
+          await _database.updateMangaDownloadJobStatus(
+            job.jobId,
+            status: MangaDownloadJobStatus.cancelled,
+            updatedAt: _now,
+          );
+          await _discardPartialDownload(job);
+          return;
+        }
+        if (token.paused) {
+          await _database.updateMangaDownloadJobStatus(
+            job.jobId,
+            status: MangaDownloadJobStatus.paused,
+            updatedAt: _now,
+          );
+          return;
+        }
         ErrorLogService.instance.log(
           'MangaDownloadService.download ${job.jobId}',
           error,
@@ -706,7 +768,6 @@ class MangaDownloadService {
             kMangaDownloadRetryBackoff.length - 1,
           )],
         );
-        if (token.stopped) return;
         if (token.cancelled) {
           await _database.updateMangaDownloadJobStatus(
             job.jobId,
@@ -716,6 +777,15 @@ class MangaDownloadService {
           await _discardPartialDownload(job);
           return;
         }
+        if (token.paused) {
+          await _database.updateMangaDownloadJobStatus(
+            job.jobId,
+            status: MangaDownloadJobStatus.paused,
+            updatedAt: _now,
+          );
+          return;
+        }
+        if (token.stopped) return;
       }
     }
   }
@@ -785,7 +855,7 @@ class MangaDownloadService {
     StackTrace? firstStack;
     Future<void> worker() async {
       while (pending.isNotEmpty && firstError == null) {
-        if (token.cancelled || token.stopped) return;
+        if (token.cancelled || token.paused || token.stopped) return;
         final int index = pending.removeAt(0);
         try {
           files[index] = await _fetchPage(
@@ -1147,8 +1217,9 @@ class MangaDownloadService {
   }
 
   static void _throwIfCancelled(_CancelToken token) {
-    if (token.stopped) throw const _Stopped();
     if (token.cancelled) throw const _Cancelled();
+    if (token.paused) throw const _Paused();
+    if (token.stopped) throw const _Stopped();
   }
 }
 
@@ -1158,4 +1229,8 @@ class _Cancelled implements Exception {
 
 class _Stopped implements Exception {
   const _Stopped();
+}
+
+class _Paused implements Exception {
+  const _Paused();
 }

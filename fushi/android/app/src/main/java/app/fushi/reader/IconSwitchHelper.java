@@ -17,7 +17,7 @@ import java.util.List;
 
 public class IconSwitchHelper {
 
-    private static final String PACKAGE_NAME = "app.fushi.reader";
+    private static final String NAMESPACE = MainActivity.class.getPackage().getName();
 
     // 唯一对外预设：default（兔子图标，薰衣草底 squircle）。「立绘」与「透明 wordmark」
     // 两档已下线，图标资源随之删除。
@@ -42,10 +42,10 @@ public class IconSwitchHelper {
         PackageManager pm = context.getPackageManager();
 
         // 老用户迁移：若任一退役 alias 当前启用，把它迁回 default alias。
-        migrateRetiredAliasesIfEnabled(pm);
+        migrateRetiredAliasesIfEnabled(context, pm);
 
         for (int i = 0; i < ALIAS_NAMES.size(); i++) {
-            ComponentName cn = new ComponentName(PACKAGE_NAME, PACKAGE_NAME + ALIAS_NAMES.get(i));
+            ComponentName cn = aliasComponent(context, ALIAS_NAMES.get(i));
             int state = pm.getComponentEnabledSetting(cn);
             if (state == PackageManager.COMPONENT_ENABLED_STATE_ENABLED
                 || (state == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT && i == 0)) {
@@ -60,10 +60,10 @@ public class IconSwitchHelper {
     /// 先启用 default 再逐个禁用退役 alias，避免出现零 LAUNCHER 入口的瞬态。退役档的
     /// 图标资源已删除、manifest 里也已改指向 default 的图标，所以迁移不会改变观感；
     /// 没有启用态的退役 alias 时为 no-op。
-    private static void migrateRetiredAliasesIfEnabled(PackageManager pm) {
+    private static void migrateRetiredAliasesIfEnabled(Context context, PackageManager pm) {
         boolean anyEnabled = false;
         for (String alias : RETIRED_ALIASES) {
-            ComponentName cn = new ComponentName(PACKAGE_NAME, PACKAGE_NAME + alias);
+            ComponentName cn = aliasComponent(context, alias);
             if (pm.getComponentEnabledSetting(cn) == PackageManager.COMPONENT_ENABLED_STATE_ENABLED) {
                 anyEnabled = true;
                 break;
@@ -73,19 +73,23 @@ public class IconSwitchHelper {
             return;
         }
 
-        ComponentName fallback = new ComponentName(PACKAGE_NAME, PACKAGE_NAME + ALIAS_NAMES.get(0));
+        ComponentName fallback = aliasComponent(context, ALIAS_NAMES.get(0));
         pm.setComponentEnabledSetting(fallback,
             PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
             PackageManager.DONT_KILL_APP);
 
         for (String alias : RETIRED_ALIASES) {
-            ComponentName cn = new ComponentName(PACKAGE_NAME, PACKAGE_NAME + alias);
+            ComponentName cn = aliasComponent(context, alias);
             if (pm.getComponentEnabledSetting(cn) == PackageManager.COMPONENT_ENABLED_STATE_ENABLED) {
                 pm.setComponentEnabledSetting(cn,
                     PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
                     PackageManager.DONT_KILL_APP);
             }
         }
+    }
+
+    private static ComponentName aliasComponent(Context context, String alias) {
+        return new ComponentName(context.getPackageName(), NAMESPACE + alias);
     }
 
     public static boolean switchPresetIcon(Context context, String targetKey) {
@@ -99,13 +103,13 @@ public class IconSwitchHelper {
         PackageManager pm = context.getPackageManager();
 
         // Enable new alias FIRST, then disable old — avoids zero-LAUNCHER catastrophe
-        ComponentName newAlias = new ComponentName(PACKAGE_NAME, PACKAGE_NAME + ALIAS_NAMES.get(targetIndex));
+        ComponentName newAlias = aliasComponent(context, ALIAS_NAMES.get(targetIndex));
         pm.setComponentEnabledSetting(newAlias,
             PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
             PackageManager.DONT_KILL_APP);
 
         if (currentIndex >= 0) {
-            ComponentName oldAlias = new ComponentName(PACKAGE_NAME, PACKAGE_NAME + ALIAS_NAMES.get(currentIndex));
+            ComponentName oldAlias = aliasComponent(context, ALIAS_NAMES.get(currentIndex));
             pm.setComponentEnabledSetting(oldAlias,
                 PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
                 PackageManager.DONT_KILL_APP);

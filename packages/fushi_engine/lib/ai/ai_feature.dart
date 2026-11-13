@@ -253,6 +253,10 @@ class AiFeatureAssignments {
     }
     for (final AiProviderConfig provider in providers) {
       if (provider.id == id) {
+        if (feature == AiFeature.cloudTranscription &&
+            !provider.supportsCloudTranscription) {
+          return null;
+        }
         return provider.isUsable ? provider : null;
       }
     }

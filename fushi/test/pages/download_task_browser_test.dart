@@ -1010,6 +1010,98 @@ void main() {
     });
   });
 
+  group('全局与整组控制', () {
+    testWidgets('全部取消会覆盖所有任务，不受当前分组筛选影响', (WidgetTester tester) async {
+      _viewport(tester, const Size(900, 900));
+      final List<String> cancelled = <String>[];
+      DownloadTaskEntry cancellable(String id) => DownloadTaskEntry(
+        id: id,
+        title: id,
+        kind: DownloadTaskKind.manga,
+        status: DownloadTaskStatus.active,
+        actions: DownloadTaskActions(cancel: () async => cancelled.add(id)),
+        collectionKey: id,
+        collectionTitle: id,
+        builder: (BuildContext context) => Text(id),
+      );
+      await tester.pumpWidget(
+        _host(<DownloadTaskEntry>[cancellable('a'), cancellable('b')]),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey<String>('download-summary-cancel-all')),
+      );
+      await tester.pumpAndSettle();
+      expect(cancelled, <String>['a', 'b']);
+    });
+
+    testWidgets('menu de grupo pausa só os membros daquela obra', (
+      WidgetTester tester,
+    ) async {
+      _viewport(tester, const Size(900, 900));
+      final List<String> paused = <String>[];
+      final List<String> resumed = <String>[];
+      final List<String> cancelled = <String>[];
+      DownloadTaskEntry member(
+        String id,
+        String group, {
+        DownloadTaskStatus status = DownloadTaskStatus.active,
+      }) => DownloadTaskEntry(
+        id: id,
+        title: id,
+        kind: DownloadTaskKind.manga,
+        status: status,
+        actions: DownloadTaskActions(
+          pause: status == DownloadTaskStatus.active
+              ? () async => paused.add(id)
+              : null,
+          resume: status == DownloadTaskStatus.paused
+              ? () async => resumed.add(id)
+              : null,
+          cancel: () async => cancelled.add(id),
+        ),
+        collectionKey: group,
+        collectionTitle: group,
+        builder: (BuildContext context) => Text(id),
+      );
+      await tester.pumpWidget(
+        _host(<DownloadTaskEntry>[
+          member('a1', 'a'),
+          member('a2', 'a', status: DownloadTaskStatus.paused),
+          member('b1', 'b'),
+        ]),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(
+          const ValueKey<String>('download-group-actions-collection:a'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(t.download_task_group_pause));
+      await tester.pumpAndSettle();
+      expect(paused, <String>['a1']);
+      await tester.tap(
+        find.byKey(
+          const ValueKey<String>('download-group-actions-collection:a'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(t.download_task_group_resume));
+      await tester.pumpAndSettle();
+      expect(resumed, <String>['a2']);
+      await tester.tap(
+        find.byKey(
+          const ValueKey<String>('download-group-actions-collection:a'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(t.download_task_group_cancel));
+      await tester.pumpAndSettle();
+      expect(cancelled, <String>['a1', 'a2']);
+    });
+  });
+
   group('整组删除', () {
     DownloadTaskEntry member(
       String id,

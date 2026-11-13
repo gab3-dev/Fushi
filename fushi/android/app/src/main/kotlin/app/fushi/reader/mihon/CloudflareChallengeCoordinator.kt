@@ -65,7 +65,16 @@ object CloudflareChallengeCoordinator {
         val receiver = object : ResultReceiver(main) {
             override fun onReceiveResult(code: Int, data: Bundle?) {
                 if (code == Activity.RESULT_FIRST_USER) {
-                    cancellation = data?.getParcelable("control")
+                    // The control ResultReceiver is a Fushi Parcelable sent back from the
+                    // isolated WebView process. Bundles delivered through ResultReceiver
+                    // may have no app classloader; set it before lazy unparcelling or the
+                    // release process cannot load CloudflareChallengeActivity's callback.
+                    val controlData = data
+                    if (controlData != null) {
+                        controlData.classLoader =
+                            CloudflareChallengeCoordinator::class.java.classLoader
+                        cancellation = controlData.getParcelable("control")
+                    }
                     if (cancelled) cancellation?.send(0, null)
                     return
                 }

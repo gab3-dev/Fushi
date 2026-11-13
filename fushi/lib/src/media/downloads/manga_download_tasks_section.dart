@@ -126,6 +126,9 @@ DownloadTaskEntry mangaDownloadTaskEntry(
   final bool retryable =
       job.status == MangaDownloadJobStatus.failed ||
       job.status == MangaDownloadJobStatus.cancelled;
+  final bool pausable =
+      job.status == MangaDownloadJobStatus.queued ||
+      job.status == MangaDownloadJobStatus.running;
   final MangaDownloadProgress live = downloads.progressOf(job);
   final double? progress = job.status == MangaDownloadJobStatus.done
       ? 1
@@ -145,6 +148,7 @@ DownloadTaskEntry mangaDownloadTaskEntry(
     status: switch (job.status) {
       MangaDownloadJobStatus.queued => DownloadTaskStatus.queued,
       MangaDownloadJobStatus.running => DownloadTaskStatus.active,
+      MangaDownloadJobStatus.paused => DownloadTaskStatus.paused,
       MangaDownloadJobStatus.done => DownloadTaskStatus.completed,
       MangaDownloadJobStatus.failed => DownloadTaskStatus.attention,
       _ => DownloadTaskStatus.cancelled,
@@ -153,9 +157,13 @@ DownloadTaskEntry mangaDownloadTaskEntry(
     collectionKey: job.bookKey,
     collectionTitle: collectionTitle,
     searchTerms: <String>[job.title, job.chapterTitle, collectionTitle],
-    // 单跑道持久队列：没有调度优先级、没有暂停态（cancel 后 retry 是同一行
-    // 重跑），任务上也没有可 reveal 的落盘路径。
+    // 单跑道持久队列：支持暂停后续跑（磁盘页 / mokuro staging 保留），任务上
+    // 没有可 reveal 的落盘路径。
     actions: DownloadTaskActions(
+      pause: pausable ? () => downloads.pause(job.jobId) : null,
+      resume: job.status == MangaDownloadJobStatus.paused
+          ? () => downloads.resume(job.jobId)
+          : null,
       retry: retryable ? () => downloads.retry(job.jobId) : null,
       clear: finished ? () => downloads.remove(job.jobId) : null,
       cancel: finished ? null : () => downloads.cancel(job.jobId),
@@ -207,6 +215,12 @@ DownloadTaskQuickAction? _mangaQuickAction(
     tooltip: t.dialog_cancel,
     onPressed: () => unawaited(downloads.cancel(job.jobId)),
   ),
+  MangaDownloadJobStatus.paused => DownloadTaskQuickAction(
+    key: ValueKey<String>('manga-download-quick-resume-${job.jobId}'),
+    icon: FushiIcons.play,
+    tooltip: t.download_task_resume,
+    onPressed: () => unawaited(downloads.resume(job.jobId)),
+  ),
   MangaDownloadJobStatus.failed ||
   MangaDownloadJobStatus.cancelled => DownloadTaskQuickAction(
     key: ValueKey<String>('manga-download-quick-retry-${job.jobId}'),
@@ -221,6 +235,7 @@ DownloadTaskQuickAction? _mangaQuickAction(
 /// 失败 error、排队 / 已取消中性）。
 DownloadTaskTone _toneOf(MangaDownloadJobRow job) => switch (job.status) {
   MangaDownloadJobStatus.running => DownloadTaskTone.active,
+  MangaDownloadJobStatus.paused => DownloadTaskTone.paused,
   MangaDownloadJobStatus.done => DownloadTaskTone.completed,
   MangaDownloadJobStatus.failed => DownloadTaskTone.error,
   MangaDownloadJobStatus.cancelled => DownloadTaskTone.paused,
@@ -254,6 +269,7 @@ bool _isFinished(MangaDownloadJobRow job) =>
 String _statusLabel(MangaDownloadJobRow job, MangaDownloadProgress progress) =>
     switch (job.status) {
       MangaDownloadJobStatus.queued => t.download_status_queued,
+      MangaDownloadJobStatus.paused => t.download_task_status_paused,
       MangaDownloadJobStatus.running =>
         mangaDownloadProgressLabel(progress) ?? t.download_task_status_active,
       MangaDownloadJobStatus.done => t.manga_online_downloaded,
@@ -294,6 +310,11 @@ class _MangaDownloadTaskRow extends StatelessWidget {
     final Widget statusIcon = switch (job.status) {
       MangaDownloadJobStatus.queued => FushiIcon(
         Icons.schedule_outlined,
+        size: 20,
+        color: scheme.outline,
+      ),
+      MangaDownloadJobStatus.paused => FushiIcon(
+        Icons.pause_circle_outline,
         size: 20,
         color: scheme.outline,
       ),
@@ -360,6 +381,14 @@ class _MangaDownloadTaskRow extends StatelessWidget {
             )
           : job.status == MangaDownloadJobStatus.done
           ? null
+          : job.status == MangaDownloadJobStatus.paused
+          ? FushiIconButton(
+              tooltip: t.download_task_resume,
+              icon: FushiIcons.play,
+              size: 20,
+              constraints: _actionTarget,
+              onTap: () => unawaited(downloads.resume(job.jobId)),
+            )
           : FushiIconButton(
               tooltip: t.dialog_cancel,
               icon: Icons.close,

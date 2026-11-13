@@ -32,7 +32,7 @@
     <uses-permission android:name="android.permission.NFC"/>
     <uses-feature android:name="android.hardware.nfc" android:required="false"/>
     <application
-        android:label="Fushi"
+        android:label="${fushiAppLabel}"
         android:name="${applicationName}"
         android:icon="@mipmap/launcher_icon_squircle"
         android:networkSecurityConfig="@xml/network_security_config"
@@ -105,7 +105,7 @@
             android:name=".MainActivityDefault"
             android:targetActivity=".MainActivity"
             android:icon="@mipmap/launcher_icon_squircle"
-            android:label="Fushi"
+            android:label="${fushiAppLabel}"
             android:enabled="true"
             android:exported="true">
             <intent-filter>
@@ -125,7 +125,7 @@
             android:name=".MainActivityFushiFull"
             android:targetActivity=".MainActivity"
             android:icon="@mipmap/launcher_icon_squircle"
-            android:label="Fushi"
+            android:label="${fushiAppLabel}"
             android:enabled="false"
             android:exported="true">
             <intent-filter>
@@ -143,7 +143,7 @@
             android:name=".MainActivityFushiTransparent"
             android:targetActivity=".MainActivity"
             android:icon="@mipmap/launcher_icon_squircle"
-            android:label="Fushi"
+            android:label="${fushiAppLabel}"
             android:enabled="false"
             android:exported="true">
             <intent-filter>
@@ -164,7 +164,7 @@
             android:name=".MainActivityFushiMinimal"
             android:targetActivity=".MainActivity"
             android:icon="@mipmap/launcher_icon_squircle"
-            android:label="Fushi"
+            android:label="${fushiAppLabel}"
             android:enabled="false"
             android:exported="true">
             <intent-filter>
@@ -180,7 +180,7 @@
             android:name=".PopupDictFlutterActivity"
             android:theme="@style/PopupDictTheme"
             android:process=":popup"
-            android:taskAffinity="app.fushi.reader.popup"
+            android:taskAffinity="${applicationId}.popup"
             android:excludeFromRecents="true"
             android:autoRemoveFromRecents="true"
             android:launchMode="singleTop"
@@ -246,7 +246,7 @@
         <activity
             android:name=".ScreenCaptureRequestActivity"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
-            android:taskAffinity="app.fushi.reader.screencapture"
+            android:taskAffinity="${applicationId}.screencapture"
             android:excludeFromRecents="true"
             android:autoRemoveFromRecents="true"
             android:launchMode="singleTop"
@@ -262,7 +262,7 @@
             android:name=".GameStreamCompanionActivity"
             android:process=":companion"
             android:theme="@style/NormalTheme"
-            android:taskAffinity="app.fushi.reader.companion"
+            android:taskAffinity="${applicationId}.companion"
             android:excludeFromRecents="true"
             android:exported="false"
             android:resizeableActivity="true"

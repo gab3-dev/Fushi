@@ -1,4 +1,6 @@
 // 「功能 → 提供商」映射的默认提供商语义：显式指派 > 显式关掉 > 默认。
+import 'dart:convert';
+
 import 'package:test/test.dart';
 
 import 'package:fushi_engine/ai/ai_feature.dart';
@@ -82,6 +84,40 @@ void main() {
     ).withAssignment(AiFeature.dictStyle, 'ai-broken');
     expect(assignments.resolve(AiFeature.dictStyle, providers), isNull);
   });
+
+  test(
+    'ChatGPT-plan provider handles non-audio features but not cloud transcription',
+    () {
+      final AiProviderConfig plan = AiProviderConfig(
+        id: 'chatgpt-plan',
+        presetId: kAiChatGptPlanPresetId,
+        name: 'ChatGPT plan',
+        baseUrl: Uri.parse('https://api.openai.com/v1'),
+        model: 'gpt-visible',
+        protocol: AiWireProtocol.openAiResponses,
+        chatGptPlanCredentialId: 'secure-record',
+        acceptsImages: true,
+      );
+      expect(plan.isUsable, isTrue);
+      expect(plan.apiKeys, isEmpty, reason: 'OAuth tokens are not API keys');
+      final AiFeatureAssignments assigned = const AiFeatureAssignments(
+        defaultProviderId: 'chatgpt-plan',
+      ).withAssignment(AiFeature.cloudTranscription, 'chatgpt-plan');
+      expect(
+        assigned.resolve(AiFeature.acquire, <AiProviderConfig>[plan])?.id,
+        'chatgpt-plan',
+      );
+      expect(
+        assigned.resolve(AiFeature.cloudTranscription, <AiProviderConfig>[
+          plan,
+        ]),
+        isNull,
+      );
+      final String encoded = jsonEncode(plan.toJson());
+      expect(encoded, contains('secure-record'));
+      expect(encoded, isNot(contains('access_token')));
+    },
+  );
 
   test('没有默认也没有指派 → null（与旧行为一致）', () {
     expect(
